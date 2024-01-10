@@ -32,6 +32,7 @@ class HardwareId(Enum):
     STD_BOTTOM_UP_PROPANE = 0x3
     TOP_DOWN_AIR_SPACE = 0x4
     BOTTOM_UP_WATER = 0x5
+    PRO_CHECK_UNIVERSAL = 0xC     # decimal 12, p/n M1017020A 
 
 
 class MopekaAdvertisement(object):
