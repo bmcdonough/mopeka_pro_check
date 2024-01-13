@@ -8,6 +8,10 @@
     ``` bash
     pip install --upgrade -e .
     ```
+    or
+    ``` bash
+    pip install --user --upgrade -e .
+    ```
 
 3. Install dev requirements
 
