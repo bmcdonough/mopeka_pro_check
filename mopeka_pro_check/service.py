@@ -215,9 +215,11 @@ class MopekaService(object):
           _LOGGER.info("Discovery Mode - MopekaAdvertisement: %s @ %sdBm" % (ma.mac.address,ma.rssi))
           self.ServiceStats._processed_ad_count += 1
 
-          if(ma.SyncButtonPressed):
+#          if(ma.SyncButtonPressed):
             # Only sensors with button pressed should be discovered
             # Recommendation by Mopeka
+          if NOT (ma.SyncButtonPressed):
+            # promiscuous mode
             sensor = MopekaSensor(packet_mac.address)
             sensor.AddReading(ma)
             self.SensorDiscoveredList[packet_mac] = sensor
