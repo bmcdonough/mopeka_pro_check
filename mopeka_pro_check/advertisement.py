@@ -131,10 +131,8 @@ class MopekaAdvertisement(object):
             )
 
         self.HardwareId = HardwareId(data[3])
-        if self.HardwareId != HardwareId.STD_BOTTOM_UP_PROPANE:
-            raise Exception(
-                f"Advertising Data has Unsupported Hardware ID {self.HardwareId}"
-            )
+        if not isinstance(self.HardwareId, HardwareId):
+            _LOGGER.error("Mopeka Sensor %s has Unsupported Hardware ID %s" % (self.mac.address,hex(data[3])))
 
         self._raw_battery = data[4] & 0x7F
 
