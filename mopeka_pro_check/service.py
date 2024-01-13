@@ -218,7 +218,7 @@ class MopekaService(object):
 #          if(ma.SyncButtonPressed):
             # Only sensors with button pressed should be discovered
             # Recommendation by Mopeka
-          if NOT (ma.SyncButtonPressed):
+          if not (ma.SyncButtonPressed):
             # promiscuous mode
             sensor = MopekaSensor(packet_mac.address)
             sensor.AddReading(ma)
