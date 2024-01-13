@@ -212,6 +212,7 @@ class MopekaService(object):
         # packet from untracked device
         try:
           ma = MopekaAdvertisement(hci_packet.data)
+          _LOGGER.info("Discovery Mode - MopekaAdvertisement: %s @ %sdBm" % (ma.mac.address,ma.rssi))
           self.ServiceStats._processed_ad_count += 1
 
           if(ma.SyncButtonPressed):
