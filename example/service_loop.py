@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+import sys
 from mopeka_pro_check.service import MopekaService, MopekaSensor, GetServiceInstance
 from time import sleep
 
@@ -13,3 +15,4 @@ while True:
     service.Stop()
     for s in service.SensorDiscoveredList.values():
         s.Dump()
+    sys.stdout.flush()
