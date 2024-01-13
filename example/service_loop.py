@@ -11,7 +11,7 @@ service.DoSensorDiscovery()
 while True:
     print("Service Loop")
     service.Start()
-    sleep(10)
+    sleep(60)
     service.Stop()
     for s in service.SensorDiscoveredList.values():
         s.Dump()
