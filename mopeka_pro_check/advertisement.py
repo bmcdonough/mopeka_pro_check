@@ -207,6 +207,7 @@ class MopekaAdvertisement(object):
 
     def __str__(self) -> str:
         return ("MopekaAdvertisement -  " +
+                f"MAC: {self.mac.address}  " +
                 f"RSSI: {self.rssi}dBm  " +
                 f"Battery: {self.BatteryVoltage} volts {self.BatteryPercent}%  " +
                 f"Button Pressed: {self.SyncButtonPressed}  " +
