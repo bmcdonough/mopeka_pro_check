@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+import sys
+from mopeka_pro_check.service import MopekaService, MopekaSensor, GetServiceInstance
+from time import sleep
+
+service = GetServiceInstance()
+service.SetHostControllerIndex(0)
+print("Do Discovery")
+service.DoSensorDiscovery()
+
+service.Start()
+sleep(15)
+service.Stop()
+for s in service.SensorDiscoveredList.values():
+    s.Dump()
+sys.stdout.flush()
