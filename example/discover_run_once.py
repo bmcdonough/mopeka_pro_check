@@ -14,4 +14,4 @@ service.Stop()
 for s in service.SensorDiscoveredList.values():
     s.Dump()
 sys.stdout.flush()
-sys.exit(EOFError)
+sys.exit()
