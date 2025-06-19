@@ -11,21 +11,19 @@ SPDX-License-Identifier: MIT
 """
 from typing import Optional
 
-from bleson import BDAddress
-
 from .advertisement import MopekaAdvertisement
 
 class MopekaSensor(object):
   """ Sensor Object """
 
   _mac: str
-  _bdaddress: BDAddress
-  _last_packet: MopekaAdvertisement
+  # _bdaddress is no longer needed as simplepyble uses string MACs
+  _last_packet: Optional[MopekaAdvertisement]
 
   def __init__(self, mac_address:str ):
     self._mac = mac_address
-    self._bdaddress = BDAddress(mac_address)
-    self._last_packet = None
+    # self._bdaddress = BDAddress(mac_address) # Removed bleson specific BDAddress
+    self._last_packet: Optional[MopekaAdvertisement] = None
 
   def AddReading(self, reading_data: MopekaAdvertisement):
     self._last_packet = reading_data
@@ -37,7 +35,7 @@ class MopekaSensor(object):
     return t
 
   def __str__(self) -> str:
-    return "{MopekaSensor - MAC ADDRESS: " + str(self._mac) + " " + str(self._last_packet) + "}"
+    return f"{{MopekaSensor - MAC ADDRESS: {self._mac} {self._last_packet}}}"
 
   def Dump(self):
     print(f"MopekaSensor:")

@@ -8,15 +8,14 @@ SPDX-License-Identifier: MIT
 from enum import Enum
 import logging
 from typing import Optional
-
-from bleson import BDAddress
-from bleson.core.hci.type_converters import rssi_from_byte
-from bleson.core.hci.constants import GAP_MFG_DATA, GAP_NAME_COMPLETE
+# import simplepyble # Not directly used here, but simplepyble is the source of data
 
 # converting sensor value to height - contact Mopeka for other fluids/gases
 MOPEKA_TANK_LEVEL_COEFFICIENTS_PROPANE = (0.573045, -0.002822, -0.00000535)
 
 MOPEKA_MANUFACTURE_ID = 0x0059
+# Standard Bluetooth GAP AdType for Manufacturer Specific Data
+GAP_MFG_DATA = 0xFF
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,64 +34,46 @@ class HardwareId(Enum):
     PRO_CHECK_UNIVERSAL = 0xC     # decimal 12, p/n M1017020A 
 
 
-class MopekaAdvertisement(object):
-    """ BLE GAP/Advertisement parser.
-    Will parse a single packet with multiple GAP reports.
+class MopekaAdvertisement:
+    """ Represents a parsed Mopeka sensor BLE advertisement.
 
-    Designed to only parse Mopeka sensor GAP reports
-
-    Exceptions will be raised in the init function if the packet
-    is not formated as expected and/or not complete.
+    This class is designed to be initialized with parsed data obtained
+    from a BLE scanning library like simpleble, not raw HCI packets.
     """
 
     rssi: int
     name: Optional[str]
-    mac: BDAddress
+    mac: str # simpleble uses string for MAC address
 
     # Private Members
     _raw_mfg_data: bytes
+    _raw_battery: int
+    _raw_temp: int
+    _raw_tank_level: int
+    _raw_x_accel: int
+    _raw_y_accel: int
 
-    def __init__(self, data: bytes):
-        """ init from ble advertising data
+    def __init__(self, mac: str, rssi: int, name: Optional[str], mfg_data: bytes):
+        """ Initialize from parsed BLE advertising data.
 
-        preamble: 3
-        Access Address: 6
-        GAP Packet: N
-        GAP Packet[1]: N
-        GAP_Packet[2]: N
-
-        GAP Packet:
-            length: 1 (length of packet not including the length byte)
-            type: 1
-            Payload: N
+        Args:
+            mac: The sensor's MAC address (string).
+            rssi: The received signal strength indicator (int).
+            name: The sensor's advertised name (string or None).
+            mfg_data: The manufacturer data bytes, expected to be pre-formatted by
+                      the caller (MopekaService) to include:
+                      [GAP_AD_TYPE (0xFF), MFG_ID_LSB (0x59), MFG_ID_MSB (0x00), 10-byte Mopeka payload]
         """
+        self.mac = mac
+        self.rssi = rssi
+        self.name = name
+        self._raw_mfg_data = mfg_data
 
-        self.rssi = rssi_from_byte(data[-1])
-        self.mac = BDAddress(data[3:9])
-        self.name = None
-        self._raw_mfg_data = None
+        # Parse the Mopeka specific manufacturer data
+        self._parse_mopeka_mfg_data(mfg_data)
 
-        gap_data = data[10:-1]  # trim the data to just the ad data
-        offset = 0
-        # parse the GAP reports in a loop
-        while offset < len(gap_data):
-            length = gap_data[offset]
-            # process gap data starting with type byte (first byte after size)
-            self._process_gap(gap_data[offset + 1 : offset + 1 + length])
-            offset += 1 + length
-
-        if len(gap_data) < 1:
-            # catch packets that have no GAP data as
-            # the mopeka sensor does send these and they
-            # should not be considered an error.
-            raise NoGapDataException("No GAP data")
-
-        if self._raw_mfg_data is None:
-            # Make sure we found the required MFG_DATA for Mopeka Sensor
-            raise Exception("Incomplete Sensor Data")
-
-    def _process_gap(self, data: bytes) -> None:
-        """ Process supported BLE GAP reports.
+    def _parse_mopeka_mfg_data(self, data: bytes) -> None:
+        """ Parse the Mopeka specific manufacturer data bytes.
 
         data should be buffer starting with type and have length matching
         the report length.
@@ -100,28 +81,22 @@ class MopekaAdvertisement(object):
 
         if data[0] == GAP_MFG_DATA:
             self._process_gap_mfg_data(data)
-
-        elif data[0] == GAP_NAME_COMPLETE:
-            self._process_gap_name_complete(data)
-
         else:
             _LOGGER.debug(
-                "Unsupported GAP report type 0x%X on sensor %s"
-                % (data[0], str(self.mac))
+                "Unexpected data type in manufacturer data: 0x%X on sensor %s",
+                data[0], self.mac
             )
 
-    def _process_gap_name_complete(self, data:bytes) -> None:
-        """ process GAP data of type GAP_NAME_COMPLETE """
-        self.name = data[1:].decode("ascii")
-
-    def _process_gap_mfg_data(self, data:bytes) ->None:
+    def _process_gap_mfg_data(self, data: bytes) -> None:
         """ process GAP data of type GAP_MFG_DATA
 
         data should be buffer in format defined by Mopeka
         """
-
-        MfgDataLength = len(data)
-        if MfgDataLength != 13:
+        # data is [GAP_TYPE (0xFF), CompanyID_LSB, CompanyID_MSB, Mopeka_Payload(10 bytes)]
+        # Total length should be 1 (type) + 2 (mfg_id) + 10 (payload) = 13 bytes
+        expected_total_len = 13
+        MfgDataLength = len(data) # Define MfgDataLength
+        if MfgDataLength != expected_total_len:
             raise Exception(f"Unsupported Data Length (0x{MfgDataLength:X})")
 
         self.ManufacturerId = data[1] + (data[2] << 8)
@@ -132,7 +107,7 @@ class MopekaAdvertisement(object):
 
         self.HardwareId = HardwareId(data[3])
         if not isinstance(self.HardwareId, HardwareId):
-            _LOGGER.error("Mopeka Sensor %s has Unsupported Hardware ID %s" % (self.mac.address,hex(data[3])))
+            _LOGGER.error("Mopeka Sensor %s has Unsupported Hardware ID %s", self.mac, hex(data[3]))
 
         self._raw_battery = data[4] & 0x7F
 
@@ -147,11 +122,6 @@ class MopekaAdvertisement(object):
 
         self._raw_x_accel = data[11]
         self._raw_y_accel = data[12]
-
-        # Set raw data for debug late.  Do it last as it can also be used
-        # as successful parsing indicator
-        self._raw_mfg_data = data
-
 
     @property
     def BatteryVoltage(self) -> float:
@@ -207,7 +177,7 @@ class MopekaAdvertisement(object):
 
     def __str__(self) -> str:
         return ("MopekaAdvertisement -  " +
-                f"MAC: {self.mac.address}  " +
+                f"MAC: {self.mac}  " +
                 f"RSSI: {self.rssi}dBm  " +
                 f"Battery: {self.BatteryVoltage} volts {self.BatteryPercent}%  " +
                 f"Button Pressed: {self.SyncButtonPressed}  " +
@@ -218,7 +188,7 @@ class MopekaAdvertisement(object):
     def Dump(self):
         """ Helper routine that prints ad data plus all mfg data"""
         print(self)
-        print("MfgData: ", end="")
+        print("Raw MfgData: ", end="")
         for a in self._raw_mfg_data:
             print("0x%02X" % a, end="  ")
         print("\n")

@@ -24,7 +24,7 @@ setuptools.setup(
     use_scm_version=True,
     setup_requires=['setuptools_scm'],
     install_requires=[
-        'bleson>=0.1.6'
+        'simplepyble>=0.1.0' # Or your desired minimum version
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

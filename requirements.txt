@@ -5,3 +5,5 @@ black
 setuptools
 wheel
 twine
+simplepyble
+pytest-asyncio # If tests are updated for async

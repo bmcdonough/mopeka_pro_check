@@ -11,14 +11,12 @@ Copyright (c) 2021 Sean Brogan
 SPDX-License-Identifier: MIT
 
 """
+import asyncio
 import logging
 from enum import Enum
-from typing import List, Optional, Dict
-
-from bleson.core.hci.constants import EVT_LE_ADVERTISING_REPORT  # type: ignore
-from bleson import get_provider, BDAddress
-
-from .advertisement import MopekaAdvertisement, NoGapDataException
+from typing import Optional, Dict, List # List might be needed for simplepyble.Adapter.get_adapters()
+import simplepyble
+from .advertisement import MopekaAdvertisement, NoGapDataException, MOPEKA_MANUFACTURE_ID
 from .sensor import MopekaSensor
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,18 +54,18 @@ class MopekaService(object):
   """ Class uses ble stack to listen for advertisements and update data
   This service uses bleson which as of 0.1.8 only actually works on Linux"""
 
-  SensorMonitoredList: Dict[BDAddress, MopekaSensor]
+  SensorMonitoredList: Dict[str, MopekaSensor] # MAC address (str) is the key
   """ Sensor data received while in Filtered mode per sensor """
 
-  SensorDiscoveredList: Dict[BDAddress, MopekaSensor]
+  SensorDiscoveredList: Dict[str, MopekaSensor] # MAC address (str) is the key
   """ New Sensors discovered while scanning in Discovery mode """
 
   ServiceStats: ReadStats
   """ Stats for the latest scanning session"""
 
   _hci_index: int
-  _adapter: Optional[object]
-  _started: bool
+  _adapter: Optional[simplepyble.Adapter]
+  _scanning_task: Optional[asyncio.Task]
   _should_start: bool
 
   def __init__(self):
@@ -77,7 +75,7 @@ class MopekaService(object):
 
     """
     self._hci_index = 0
-    self._started = False
+    self._scanning_task = None
     self._should_start = False
     self._adapter = None
     self._scanning_mode = ServiceScanningMode.FILTERED_MODE
@@ -107,13 +105,13 @@ class MopekaService(object):
     Note: this will not start scanning
     Note: this will clear any previously discovered sensors
     Note: this will clear all statistics
-    """
-    self.Stop()
+    """ # Make this async if Stop is async
+    asyncio.create_task(self.Stop()) # Stop if running, fire and forget
     self.SensorDiscoveredList.clear()
     self._scanning_mode = ServiceScanningMode.DISCOVERY_MODE
     self.ServiceStats = ReadStats()
 
-  def AddSensorToMonitor(self, sensor: MopekaSensor) -> None:
+  async def AddSensorToMonitor(self, sensor: MopekaSensor) -> None:
     """ Add a sensor that should be monitored when scanning in filtered mode.
     If the sensor mac address is already listed the sensor will be replaced with
     new sensor.
@@ -121,16 +119,16 @@ class MopekaService(object):
     Note: Scanning will be stopped while the sensor is added
     """
     if self._scanning_mode == ServiceScanningMode.FILTERED_MODE:
-      self._stop()  # stop processing so that we can safely update the shared list
+      await self.Stop()  # stop processing so that we can safely update the shared list
 
     self.SensorMonitoredList[sensor._bdaddress] = sensor
 
     # restart scanning if it was previously scanning in filtered mode
     if self._scanning_mode == ServiceScanningMode.FILTERED_MODE and self._should_start:
-      self._start()
+      await self._start_scanning_task()
     return
 
-  def RemoveSensorToMonitor(self, sensor: MopekaSensor) -> None:
+  async def RemoveSensorToMonitor(self, sensor: MopekaSensor) -> None:
     """ Remove a sensor from the list to be monitored.  If the sensor isn't
     found in the list just return.
 
@@ -138,96 +136,163 @@ class MopekaService(object):
 
     """
     if sensor._bdaddress in self.SensorMonitoredList:
-      if self._scanning_mode == ServiceScanningMode.FILTERED_MODE:
-        self._stop()
-      self.SensorMonitoredList.pop(self.SensorMonitoredList[sensor._bdaddress], None)
+        if self._scanning_mode == ServiceScanningMode.FILTERED_MODE:
+            await self.Stop()
+        self.SensorMonitoredList.pop(sensor._bdaddress, None) # Pop by key
 
-      if self._scanning_mode == ServiceScanningMode.FILTERED_MODE and self._should_start:
-        self._start()
+        if self._scanning_mode == ServiceScanningMode.FILTERED_MODE and self._should_start:
+            await self._start_scanning_task()
 
-  def Start(self) -> None:
+  async def Start(self) -> None:
     """ Start scanning """
     self._should_start = True
-    self._start()
-    return
+    await self._start_scanning_task()
 
-  def _start(self) -> None:
-    """ Internal start function that doesn't change user intent"""
-    if self._started:
-      return
+  async def _start_scanning_task(self) -> None:
+    """ Internal function to start the scanning asyncio task """
+    if self._scanning_task and not self._scanning_task.done():
+        _LOGGER.info("Scanning is already in progress.")
+        return
 
     # don't start unless there is a sensor list to filter for
     if self._scanning_mode == ServiceScanningMode.FILTERED_MODE and len(self.SensorMonitoredList) == 0:
-      return
+        _LOGGER.info("Filtered mode: No sensors to monitor. Scan not started.")
+        return
 
-    # if adapter is none do initial setup before starting.
     if self._adapter is None:
-      self._adapter = get_provider().get_adapter(self._hci_index)
-      self._adapter._handle_meta_event = handle_meta_event_override
+        adapters: List[simplepyble.Adapter] = simplepyble.Adapter.get_adapters()
+        if not adapters:
+            _LOGGER.error("No BLE adapters found.")
+            raise Exception("No BLE adapters found.")
+        if self._hci_index >= len(adapters):
+            _LOGGER.error(f"Adapter index {self._hci_index} out of range. Available: {len(adapters)}")
+            raise Exception(f"Adapter index {self._hci_index} out of range.")
+        self._adapter = adapters[self._hci_index]
+        _LOGGER.info(f"Using adapter: {self._adapter.identifier()} [{self._adapter.address()}]")
 
-    self._adapter.start_scanning()
-    self._started = True
+    if self._adapter is None: # Should not happen if logic above is correct
+        _LOGGER.error("Adapter not initialized.")
+        return
 
+    _LOGGER.info(f"Starting Mopeka service scan in {self._scanning_mode.name} mode...")
+    self._adapter.set_callback_on_scan_start(lambda: _LOGGER.info("Scan started."))
+    self._adapter.set_callback_on_scan_stop(lambda: _LOGGER.info("Scan stopped."))
+    self._adapter.set_callback_on_scan_found(self._handle_advertisement_callback)
 
-  def Stop(self) -> None:
+    self._scanning_task = asyncio.create_task(self._scan_loop())
+
+  async def _scan_loop(self):
+      if not self._adapter:
+          _LOGGER.error("Adapter not available for scanning loop.")
+          return
+      try:
+          # simplepyble's scan_start is non-blocking and uses callbacks.
+          # The scan_for method is blocking for its duration.
+          # We'll use scan_start and let the callback handle ads.
+          await self._adapter.scan_start()
+          while self._should_start:
+              if not self._adapter.scan_is_active():
+                  _LOGGER.warning("Scan became inactive unexpectedly. Attempting to restart.")
+                  await self._adapter.scan_start()
+              await asyncio.sleep(1) # Keep loop alive, check _should_start
+      except simplepyble.BleakError as e: # simplepyble might raise BleakError
+          _LOGGER.error(f"Simplepyble BLE error during scan: {e}")
+      except Exception as e:
+          _LOGGER.error(f"Error during scan loop: {e}")
+      finally:
+          if self._adapter and self._adapter.scan_is_active():
+              await self._adapter.scan_stop()
+          _LOGGER.info("Mopeka service scan loop ended.")
+          self._scanning_task = None # Clear task when loop finishes or is cancelled
+
+  async def Stop(self) -> None:
     """ stop scanning"""
     self._should_start = False
-    self._stop()
+    if self._scanning_task and not self._scanning_task.done():
+        _LOGGER.info("Stopping scan task...")
+        self._scanning_task.cancel()
+        try:
+            await self._scanning_task # Wait for task to acknowledge cancellation
+        except asyncio.CancelledError:
+            _LOGGER.info("Scan task successfully cancelled.")
+        except Exception as e: # Catch other potential errors during task cancellation
+            _LOGGER.error(f"Error during scan task cancellation: {e}")
+    # Ensure scan_stop is called even if task was already done or None
+    if self._adapter and self._adapter.scan_is_active():
+        await self._adapter.scan_stop()
+    self._scanning_task = None # Ensure task is cleared
 
-  def _stop(self) -> None:
-    """ Internal function to stop but doesn't change state for users desire"""
-    if self._started:
-      self._adapter.stop_scanning()
-      self._started = False
-
-  def ProcessAdvertisementPacket(self, hci_packet) -> None:
-    """ Function to parse and handle HCI packet data"""
+  def _handle_advertisement_callback(self, peripheral: simplepyble.Peripheral) -> None:
+    """ Callback function for simplepyble advertisements """
+    mac = peripheral.address()
+    rssi = peripheral.rssi()
+    # simplepyble's Peripheral object might not have a direct 'name' attribute.
+    # Name is usually part of advertisement data, which simplepyble provides separately
+    # or sometimes through peripheral.identifier() if it's the local name.
+    # We'll try peripheral.identifier() and then look into advertisement_data if available.
+    # For simplepyble, the advertisement data is often accessed via peripheral.advertisement_data()
+    # or passed to the callback. Let's assume peripheral.identifier() gives a usable name for now.
+    name = peripheral.identifier()
+    
+    # Manufacturer data is a dictionary {company_id: data_bytes}
+    mopeka_mfg_payload = peripheral.manufacturer_data().get(MOPEKA_MANUFACTURE_ID)
 
     if self._scanning_mode == ServiceScanningMode.FILTERED_MODE:
       # Filtered Mode is scanning and only processing known sensors
-      packet_mac = BDAddress(hci_packet.data[3:9])
-      sensor = self.SensorMonitoredList.get(packet_mac)
+      sensor = self.SensorMonitoredList.get(mac)
       if sensor is not None:
-        try:
-          sensor.AddReading(MopekaAdvertisement(hci_packet.data))
-          self.ServiceStats._processed_ad_count += 1
-
-        except NoGapDataException:
-          # This is not an error.  Sensor sends advertisements with zero data
-          # just ignore them.
-          self.ServiceStats._zero_length_ad_count += 1
-
-        except Exception as e:
-          _LOGGER.error("Failed to process advertisement from defined sensor.  Exception: %s" % e)
-          self.ServiceStats._ignored_ad_count += 1
+        if mopeka_mfg_payload:
+            try:
+                # Construct the full manufacturer data expected by MopekaAdvertisement
+                # [GAP_AD_TYPE (0xFF), MFG_ID_LSB (0x59), MFG_ID_MSB (0x00), Mopeka_Payload(10 bytes)]
+                mfg_data_full = bytes([MopekaAdvertisement.GAP_MFG_DATA,
+                                       MOPEKA_MANUFACTURE_ID & 0xFF, 
+                                       (MOPEKA_MANUFACTURE_ID >> 8) & 0xFF]) + mopeka_mfg_payload
+                
+                ma = MopekaAdvertisement(mac=mac, rssi=rssi, name=name, mfg_data=mfg_data_full)
+                sensor.AddReading(ma)
+                self.ServiceStats._processed_ad_count += 1
+            except Exception as e:
+                _LOGGER.error(f"Failed to process advertisement from defined sensor {mac}. Exception: {e}")
+                self.ServiceStats._error_ad_count += 1 # Count as error
+        else:
+             self.ServiceStats._ignored_ad_count += 1 # No Mopeka data
       else:
         self.ServiceStats._ignored_ad_count += 1
 
     elif self._scanning_mode == ServiceScanningMode.DISCOVERY_MODE:
       # Discovery mode is looking for all Mopeka Sensors and reporting
       # them if their sync button is pressed
-      packet_mac = BDAddress(hci_packet.data[3:9])
-      sensor = self.SensorDiscoveredList.get(packet_mac)
-      if sensor == None:
-        # packet from untracked device
+      if mopeka_mfg_payload:
+        sensor = self.SensorDiscoveredList.get(mac)
         try:
-          ma = MopekaAdvertisement(hci_packet.data)
-          _LOGGER.info("Discovery Mode - MopekaAdvertisement: %s @ %sdBm" % (ma.mac.address,ma.rssi))
-          self.ServiceStats._processed_ad_count += 1
+            mfg_data_full = bytes([MopekaAdvertisement.GAP_MFG_DATA,
+                                   MOPEKA_MANUFACTURE_ID & 0xFF, 
+                                   (MOPEKA_MANUFACTURE_ID >> 8) & 0xFF]) + mopeka_mfg_payload
+            ma = MopekaAdvertisement(mac=mac, rssi=rssi, name=name, mfg_data=mfg_data_full)
+            _LOGGER.info(f"Discovery Mode - MopekaAdvertisement: {ma.mac} @ {ma.rssi}dBm")
+            self.ServiceStats._processed_ad_count += 1
 
 #          if(ma.SyncButtonPressed):
             # Only sensors with button pressed should be discovered
             # Recommendation by Mopeka
-          if not (ma.SyncButtonPressed):
-            # promiscuous mode
-            sensor = MopekaSensor(packet_mac.address)
-            sensor.AddReading(ma)
-            self.SensorDiscoveredList[packet_mac] = sensor
-
-        except:
-          self.ServiceStats._ignored_ad_count += 1
-          # Not a Mopeka Sensor or supported sensor
-          pass
+          # The original code added if NOT sync button pressed (promiscuous).
+          # To discover only on sync button press, use: if ma.SyncButtonPressed:
+          # For now, retaining promiscuous-like behavior for all Mopeka sensors found:
+            if sensor is None: # Add if new
+              # promiscuous mode
+              sensor = MopekaSensor(mac)
+              sensor.AddReading(ma)
+              self.SensorDiscoveredList[mac] = sensor
+              _LOGGER.info(f"Discovered new Mopeka sensor: {mac}")
+            else: # Update existing discovered sensor
+              sensor.AddReading(ma)
+            
+        except Exception as e:
+            _LOGGER.error(f"Failed to process advertisement in discovery mode from {mac}. Exception: {e}")
+            self.ServiceStats._error_ad_count += 1 # Count as error
+      else:
+          self.ServiceStats._ignored_ad_count += 1 # Not Mopeka or no mfg data
 
 ######################################################################################
 ## Global Functions
@@ -238,17 +303,3 @@ def GetServiceInstance() -> MopekaService:
   if GlobalService is None:
     GlobalService = MopekaService()
   return GlobalService
-
-def handle_meta_event_override(hci_packet) -> None:
-  """ This was used in some working examples with bleson and BLE.  It looks
-  like the raw data is never actually provided by the bleson implementation.
-  """
-  # If received BLE packet is of type ADVERTISING_REPORT
-  if hci_packet.subevent_code == EVT_LE_ADVERTISING_REPORT:
-    service = GetServiceInstance()
-    service.ProcessAdvertisementPacket(hci_packet)
-
-
-
-
-
