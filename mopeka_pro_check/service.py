@@ -190,19 +190,17 @@ class MopekaService(object):
           # simplepyble's scan_start is non-blocking and uses callbacks.
           # The scan_for method is blocking for its duration.
           # We'll use scan_start and let the callback handle ads.
-          await self._adapter.scan_start()
+          self._adapter.scan_start()
           while self._should_start:
               if not self._adapter.scan_is_active():
                   _LOGGER.warning("Scan became inactive unexpectedly. Attempting to restart.")
-                  await self._adapter.scan_start()
+                  self._adapter.scan_start()
               await asyncio.sleep(1) # Keep loop alive, check _should_start
-      except simplepyble.BleakError as e: # simplepyble might raise BleakError
-          _LOGGER.error(f"Simplepyble BLE error during scan: {e}")
       except Exception as e:
           _LOGGER.error(f"Error during scan loop: {e}")
       finally:
           if self._adapter and self._adapter.scan_is_active():
-              await self._adapter.scan_stop()
+              self._adapter.scan_stop()
           _LOGGER.info("Mopeka service scan loop ended.")
           self._scanning_task = None # Clear task when loop finishes or is cancelled
 
