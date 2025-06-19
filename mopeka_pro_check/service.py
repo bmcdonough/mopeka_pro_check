@@ -96,7 +96,7 @@ class MopekaService(object):
     self._hci_index = index
     return True
 
-  def DoSensorDiscovery(self):
+  async def DoSensorDiscovery(self) -> None:
     """ Setup the service to scan for all Mopeka sensors
     with the button pressed.  This is how sensors should be
     discovered.
@@ -106,7 +106,8 @@ class MopekaService(object):
     Note: this will clear any previously discovered sensors
     Note: this will clear all statistics
     """ # Make this async if Stop is async
-    asyncio.create_task(self.Stop()) # Stop if running, fire and forget
+    if self._scanning_task is not None and not self._scanning_task.done():
+        await self.Stop() # Stop if running, and await it
     self.SensorDiscoveredList.clear()
     self._scanning_mode = ServiceScanningMode.DISCOVERY_MODE
     self.ServiceStats = ReadStats()
@@ -119,7 +120,7 @@ class MopekaService(object):
     Note: Scanning will be stopped while the sensor is added
     """
     if self._scanning_mode == ServiceScanningMode.FILTERED_MODE:
-      await self.Stop()  # stop processing so that we can safely update the shared list
+      await self.Stop() # stop processing so that we can safely update the shared list
 
     self.SensorMonitoredList[sensor._bdaddress] = sensor
 
