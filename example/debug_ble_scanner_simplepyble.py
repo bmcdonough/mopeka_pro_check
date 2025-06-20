@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Debug BLE scanner using bleak - shows all BLE advertisements to help troubleshoot Mopeka detection.
+Debug BLE scanner - shows all BLE advertisements to help troubleshoot Mopeka detection.
 """
 import sys
 import asyncio
 import logging
-from bleak import BleakScanner
-from bleak.backends.device import BLEDevice
-from bleak.backends.scanner import AdvertisementData
+import simplepyble
 from mopeka_pro_check.advertisement import MOPEKA_MANUFACTURE_ID
 
 # Set up logging
@@ -15,21 +13,36 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 class DebugBLEScanner:
-    def __init__(self, adapter="hci0"):
-        self.adapter = adapter
-        self.scanner = None
+    def __init__(self, adapter_index=0):
+        self.adapter_index = adapter_index
+        self.adapter = None
         self.devices_found = {}
         self.advertisement_count = 0
         
-    def advertisement_callback(self, device: BLEDevice, advertisement_data: AdvertisementData):
+    def setup_adapter(self):
+        """Initialize the BLE adapter"""
+        adapters = simplepyble.Adapter.get_adapters()
+        if not adapters:
+            logger.error("No BLE adapters found")
+            return False
+            
+        if self.adapter_index >= len(adapters):
+            logger.error(f"Adapter index {self.adapter_index} out of range. Available: {len(adapters)}")
+            return False
+            
+        self.adapter = adapters[self.adapter_index]
+        logger.info(f"Using adapter: {self.adapter.identifier()} [{self.adapter.address()}]")
+        return True
+        
+    def advertisement_callback(self, peripheral):
         """Callback for each BLE advertisement received"""
         try:
             self.advertisement_count += 1
             
             # Get basic info
-            mac_address = device.address
-            rssi = advertisement_data.rssi if advertisement_data.rssi is not None else -999
-            name = advertisement_data.local_name or device.name or "Unknown"
+            mac_address = peripheral.address()
+            rssi = peripheral.rssi()
+            name = peripheral.identifier() if peripheral.identifier() else "Unknown"
             
             # Store device info
             if mac_address not in self.devices_found:
@@ -38,40 +51,37 @@ class DebugBLEScanner:
                     'rssi': rssi,
                     'count': 0,
                     'manufacturer_data': {},
-                    'service_data': {},
-                    'services': []
+                    'available_methods': []
                 }
             
             device_info = self.devices_found[mac_address]
             device_info['count'] += 1
             device_info['rssi'] = rssi  # Update with latest RSSI
             
+            # Debug: show available methods on first device
+            if self.advertisement_count == 1:
+                methods = [m for m in dir(peripheral) if not m.startswith('_')]
+                device_info['available_methods'] = methods
+                print(f"🔧 Peripheral API methods: {methods}")
+            
             # Check manufacturer data
-            manufacturer_data = advertisement_data.manufacturer_data
-            if manufacturer_data:
-                for mfg_id, data in manufacturer_data.items():
-                    device_info['manufacturer_data'][mfg_id] = data.hex()
-                    
-                    # Check if this is a Mopeka device
-                    if mfg_id == MOPEKA_MANUFACTURE_ID:
-                        print(f"\n🎯 MOPEKA DEVICE FOUND!")
-                        print(f"   MAC: {mac_address}")
-                        print(f"   Name: {name}")
-                        print(f"   RSSI: {rssi}dBm")
-                        print(f"   Manufacturer ID: 0x{mfg_id:04X}")
-                        print(f"   Data: {data.hex()}")
-                        print(f"   Data length: {len(data)} bytes")
+            try:
+                manufacturer_data = peripheral.manufacturer_data()
+                if manufacturer_data:
+                    for mfg_id, data in manufacturer_data.items():
+                        device_info['manufacturer_data'][mfg_id] = data.hex()
                         
-            # Check service data
-            service_data = advertisement_data.service_data
-            if service_data:
-                for service_uuid, data in service_data.items():
-                    device_info['service_data'][str(service_uuid)] = data.hex()
-                    
-            # Check services
-            service_uuids = advertisement_data.service_uuids
-            if service_uuids:
-                device_info['services'] = [str(uuid) for uuid in service_uuids]
+                        # Check if this is a Mopeka device
+                        if mfg_id == MOPEKA_MANUFACTURE_ID:
+                            print(f"\n🎯 MOPEKA DEVICE FOUND!")
+                            print(f"   MAC: {mac_address}")
+                            print(f"   Name: {name}")
+                            print(f"   RSSI: {rssi}dBm")
+                            print(f"   Manufacturer ID: 0x{mfg_id:04X}")
+                            print(f"   Data: {data.hex()}")
+                            print(f"   Data length: {len(data)} bytes")
+            except Exception as e:
+                logger.debug(f"No manufacturer data for {mac_address}: {e}")
                     
             # Print every 10th advertisement for progress
             if self.advertisement_count % 10 == 0:
@@ -82,26 +92,28 @@ class DebugBLEScanner:
             
     async def scan(self, duration=30):
         """Start scanning for the specified duration"""
+        if not self.setup_adapter():
+            return False
+            
         print(f"🔍 Starting debug BLE scan for {duration} seconds...")
         print(f"   Looking for Mopeka manufacturer ID: 0x{MOPEKA_MANUFACTURE_ID:04X}")
         print(f"   Will show all BLE devices found\n")
         
+        # Set up callback
+        self.adapter.set_callback_on_scan_found(self.advertisement_callback)
+        
         try:
-            self.scanner = BleakScanner(
-                detection_callback=self.advertisement_callback,
-                adapter=self.adapter
-            )
+            self.adapter.scan_start()
             
-            await self.scanner.start()
+            # Scan for the specified duration
             await asyncio.sleep(duration)
             
         except Exception as e:
             logger.error(f"Error during scanning: {e}")
-            return False
             
         finally:
-            if self.scanner:
-                await self.scanner.stop()
+            if self.adapter.scan_is_active():
+                self.adapter.scan_stop()
                 
         print(f"\n✅ Scan completed!")
         print(f"   Total advertisements: {self.advertisement_count}")
@@ -133,13 +145,8 @@ class DebugBLEScanner:
                     if mfg_id == MOPEKA_MANUFACTURE_ID:
                         mopeka_found = True
                         
-            if info['service_data']:
-                print(f"  Service Data:")
-                for service_uuid, data in info['service_data'].items():
-                    print(f"    {service_uuid}: {data}")
-                    
-            if info['services']:
-                print(f"  Services: {', '.join(info['services'])}")
+            if info.get('available_methods'):
+                print(f"  Available methods: {', '.join(info['available_methods'])}")
         
         if not mopeka_found:
             print(f"\n❌ No Mopeka devices (manufacturer ID 0x{MOPEKA_MANUFACTURE_ID:04X}) found.")
@@ -156,7 +163,7 @@ async def main():
         try:
             duration = int(sys.argv[1])
         except ValueError:
-            print("Usage: python debug_ble_scanner_bleak.py [duration_seconds]")
+            print("Usage: python debug_ble_scanner.py [duration_seconds]")
             sys.exit(1)
     else:
         duration = 30

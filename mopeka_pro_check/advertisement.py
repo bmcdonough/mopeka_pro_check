@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 from enum import Enum
 import logging
 from typing import Optional
-# import simplepyble # Not directly used here, but simplepyble is the source of data
+# BLE data can come from bleak or other BLE libraries
 
 # converting sensor value to height - contact Mopeka for other fluids/gases
 MOPEKA_TANK_LEVEL_COEFFICIENTS_PROPANE = (0.573045, -0.002822, -0.00000535)
@@ -38,12 +38,12 @@ class MopekaAdvertisement:
     """ Represents a parsed Mopeka sensor BLE advertisement.
 
     This class is designed to be initialized with parsed data obtained
-    from a BLE scanning library like simpleble, not raw HCI packets.
+    from a BLE scanning library like bleak, not raw HCI packets.
     """
 
     rssi: int
     name: Optional[str]
-    mac: str # simpleble uses string for MAC address
+    mac: str # BLE libraries typically use string for MAC address
 
     # Private Members
     _raw_mfg_data: bytes

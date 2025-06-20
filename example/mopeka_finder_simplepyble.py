@@ -1,33 +1,43 @@
 #!/usr/bin/env python3
 """
-Advanced Mopeka sensor finder using bleak - looks for potential Mopeka devices using multiple detection methods.
+Advanced Mopeka sensor finder - looks for potential Mopeka devices using multiple detection methods.
 """
 import sys
 import asyncio
 import logging
-from bleak import BleakScanner
-from bleak.backends.device import BLEDevice
-from bleak.backends.scanner import AdvertisementData
-from mopeka_pro_check.advertisement import MOPEKA_MANUFACTURE_ID, GAP_MFG_DATA
+import simplepyble
+from mopeka_pro_check.advertisement import MOPEKA_MANUFACTURE_ID
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class MopekaFinder:
-    def __init__(self, adapter="hci0"):
-        self.adapter = adapter
-        self.scanner = None
+    def __init__(self, adapter_index=0):
+        self.adapter_index = adapter_index
+        self.adapter = None
         self.all_devices = {}
         self.potential_mopeka = {}
         self.advertisement_count = 0
         
-    def is_potential_mopeka(self, device: BLEDevice, advertisement_data: AdvertisementData):
+    def setup_adapter(self):
+        """Initialize the BLE adapter"""
+        adapters = simplepyble.Adapter.get_adapters()
+        if not adapters:
+            logger.error("No BLE adapters found")
+            return False
+            
+        if self.adapter_index >= len(adapters):
+            logger.error(f"Adapter index {self.adapter_index} out of range. Available: {len(adapters)}")
+            return False
+            
+        self.adapter = adapters[self.adapter_index]
+        logger.info(f"Using adapter: {self.adapter.identifier()} [{self.adapter.address()}]")
+        return True
+        
+    def is_potential_mopeka(self, peripheral, mac_address, name, manufacturer_data):
         """Check if this device could be a Mopeka sensor using various heuristics"""
         reasons = []
-        mac_address = device.address
-        name = advertisement_data.local_name or device.name
-        manufacturer_data = advertisement_data.manufacturer_data or {}
         
         # Check 1: Exact manufacturer ID match
         if MOPEKA_MANUFACTURE_ID in manufacturer_data:
@@ -44,6 +54,7 @@ class MopekaFinder:
                 
         # Check 4: Look for specific data patterns that might indicate Mopeka
         for mfg_id, data in manufacturer_data.items():
+            data_hex = data.hex()
             # Look for patterns that might be Mopeka hardware IDs
             if len(data) >= 1:
                 hw_id = data[0]
@@ -58,18 +69,24 @@ class MopekaFinder:
             
         return reasons
         
-    def advertisement_callback(self, device: BLEDevice, advertisement_data: AdvertisementData):
+    def advertisement_callback(self, peripheral):
         """Callback for each BLE advertisement received"""
         try:
             self.advertisement_count += 1
             
             # Get basic info
-            mac_address = device.address
-            rssi = advertisement_data.rssi if advertisement_data.rssi is not None else -999
-            name = advertisement_data.local_name or device.name
+            mac_address = peripheral.address()
+            rssi = peripheral.rssi()
+            name = peripheral.identifier() if peripheral.identifier() else None
             
             # Get manufacturer data
-            manufacturer_data = advertisement_data.manufacturer_data or {}
+            manufacturer_data = {}
+            try:
+                mfg_data = peripheral.manufacturer_data()
+                if mfg_data:
+                    manufacturer_data = mfg_data
+            except Exception as e:
+                logger.debug(f"No manufacturer data for {mac_address}: {e}")
             
             # Store all device info
             if mac_address not in self.all_devices:
@@ -87,7 +104,7 @@ class MopekaFinder:
             device_info['manufacturer_data'].update(manufacturer_data)
             
             # Check if this could be a Mopeka device
-            reasons = self.is_potential_mopeka(device, advertisement_data)
+            reasons = self.is_potential_mopeka(peripheral, mac_address, name, manufacturer_data)
             
             if reasons:
                 print(f"\n🔍 POTENTIAL MOPEKA DEVICE:")
@@ -115,17 +132,18 @@ class MopekaFinder:
             
     async def scan(self, duration=60):
         """Start scanning for the specified duration"""
+        if not self.setup_adapter():
+            return False
+            
         print(f"🔍 Starting advanced Mopeka scan for {duration} seconds...")
         print(f"   Will check for multiple Mopeka indicators")
         print(f"   Press and hold the sync button on your Mopeka sensor for best results\n")
         
+        # Set up callback
+        self.adapter.set_callback_on_scan_found(self.advertisement_callback)
+        
         try:
-            self.scanner = BleakScanner(
-                detection_callback=self.advertisement_callback,
-                adapter=self.adapter
-            )
-            
-            await self.scanner.start()
+            self.adapter.scan_start()
             
             # Scan for the specified duration
             for i in range(duration):
@@ -135,11 +153,10 @@ class MopekaFinder:
             
         except Exception as e:
             logger.error(f"Error during scanning: {e}")
-            return False
             
         finally:
-            if self.scanner:
-                await self.scanner.stop()
+            if self.adapter.scan_is_active():
+                self.adapter.scan_stop()
                 
         print(f"\n✅ Scan completed!")
         print(f"   Total advertisements: {self.advertisement_count}")
@@ -202,7 +219,7 @@ async def main():
         try:
             duration = int(sys.argv[1])
         except ValueError:
-            print("Usage: python mopeka_finder_bleak.py [duration_seconds]")
+            print("Usage: python mopeka_finder.py [duration_seconds]")
             sys.exit(1)
     else:
         duration = 60
