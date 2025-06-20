@@ -116,8 +116,8 @@ class BLEJSONLogger:
             print(json.dumps(error_obj, separators=(',', ':')))
             sys.stdout.flush()
             
-    async def start_logging(self):
-        """Start BLE scanning and JSON logging indefinitely"""
+    async def start_logging(self, timeout=None):
+        """Start BLE scanning and JSON logging indefinitely or for specified timeout"""
         try:
             self.scanner = BleakScanner(
                 detection_callback=self.advertisement_callback,
@@ -126,10 +126,13 @@ class BLEJSONLogger:
             
             await self.scanner.start()
             
-            # Run indefinitely until interrupted
+            # Run indefinitely until interrupted or timeout
             try:
-                while True:
-                    await asyncio.sleep(1)
+                if timeout is not None:
+                    await asyncio.sleep(timeout)
+                else:
+                    while True:
+                        await asyncio.sleep(1)
             except KeyboardInterrupt:
                 pass
             
@@ -151,6 +154,7 @@ class BLEJSONLogger:
 async def main():
     adapter = "hci0"
     include_raw = False
+    timeout = None
     
     # Parse command line arguments
     i = 1
@@ -158,16 +162,31 @@ async def main():
         arg = sys.argv[i]
         if arg == "--raw" or arg == "-r":
             include_raw = True
+        elif arg == "--timeout" or arg == "-t":
+            if i + 1 >= len(sys.argv):
+                print("Error: --timeout requires a value", file=sys.stderr)
+                sys.exit(1)
+            try:
+                timeout = float(sys.argv[i + 1])
+                if timeout <= 0:
+                    print("Error: timeout must be a positive number", file=sys.stderr)
+                    sys.exit(1)
+            except ValueError:
+                print(f"Error: invalid timeout value '{sys.argv[i + 1]}'", file=sys.stderr)
+                sys.exit(1)
+            i += 1  # Skip the timeout value
         elif arg == "--help" or arg == "-h":
             print("Usage: python ble_json_logger.py [options] [adapter]", file=sys.stderr)
             print("Options:", file=sys.stderr)
-            print("  --raw, -r     Include raw manufacturer data in JSON output", file=sys.stderr)
-            print("  --help, -h    Show this help message", file=sys.stderr)
+            print("  --raw, -r           Include raw manufacturer data in JSON output", file=sys.stderr)
+            print("  --timeout, -t SEC   Exit cleanly after SEC seconds (default: run forever)", file=sys.stderr)
+            print("  --help, -h          Show this help message", file=sys.stderr)
             print("Arguments:", file=sys.stderr)
-            print("  adapter       BLE adapter to use (default: hci0)", file=sys.stderr)
+            print("  adapter             BLE adapter to use (default: hci0)", file=sys.stderr)
             print("", file=sys.stderr)
-            print("Example:", file=sys.stderr)
+            print("Examples:", file=sys.stderr)
             print("  python ble_json_logger.py --raw hci1", file=sys.stderr)
+            print("  python ble_json_logger.py --timeout 30", file=sys.stderr)
             sys.exit(0)
         elif not arg.startswith("-"):
             adapter = arg
@@ -182,13 +201,14 @@ async def main():
         "action": "starting_mopeka_scan",
         "adapter": adapter,
         "include_raw_data": include_raw,
+        "timeout_seconds": timeout,
         "mopeka_manufacturer_id": f"0x{MOPEKA_MANUFACTURE_ID:04X}",
         "timestamp": datetime.now(timezone.utc).isoformat() + "Z"
     }
     print(json.dumps(startup_info), file=sys.stderr)
     
     logger = BLEJSONLogger(adapter, include_raw)
-    success = await logger.start_logging()
+    success = await logger.start_logging(timeout)
     
     # Output completion info to stderr
     completion_info = {
